@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "demo": "npm install && next build && next start"
   },
   "dependencies": {
     "@google/genai": "^2.27.0",
