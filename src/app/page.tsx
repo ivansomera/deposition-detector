@@ -2,11 +2,28 @@
 
 import { useState } from "react";
 import { TRANSCRIPT_1, TRANSCRIPT_2 } from "@/data/transcripts";
+import type { Pair } from "@/lib/schema";
+import type { ContradictionType } from "@/lib/scoring";
+
+// One analyzed contradiction, as the API returns it
+type Result = Pair & {
+  type: ContradictionType;
+  confidence: number;
+  reasons: string[];
+};
+
+// Label and colours for each contradiction type
+const TYPE_STYLES: Record<string, { label: string; border: string; background: string }> = {
+  DIRECT: { label: "Direct", border: "#ef4444", background: "#fee2e2" },
+  INFERENTIAL: { label: "Inferential", border: "#f59e0b", background: "#fef3c7" },
+  FALSE_POSITIVE: { label: "False positive", border: "#9ca3af", background: "#f3f4f6" },
+};
 
 export default function DepositionChecker() {
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState(null);
-  const [error, setError] = useState(null);
+  const [results, setResults] = useState<Result[] | null>(null);
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function analyze() {
     setLoading(true);
@@ -14,36 +31,36 @@ export default function DepositionChecker() {
     setResults(null);
 
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `Find contradictions between these two depositions from the same witness. 
-            
-Transcript 1: ${TRANSCRIPT_1}
-
-Transcript 2: ${TRANSCRIPT_2}
-
-Return a JSON array of contradictions like: [{claim1, claim2, type, severity}]
-Types: DIRECT, INFERENTIAL, or FALSE_POSITIVE
-Severity: HIGH, MEDIUM, LOW`
-          }]
-        })
-      });
-
+      // Call our own server route, which keeps the API key hidden
+      const res = await fetch("/api/analyze", { method: "POST" });
       const data = await res.json();
-      const text = data.content[0].text;
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      setResults(parsed);
-    } catch(e) {
-      setError("Failed: " + e.message);
-    }
 
-    setLoading(false);
+      if (!res.ok) {
+        setError(data.error ?? "Something went wrong.");
+      } else {
+        setResults(data.results);
+        setSource(data.source);
+      }
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Split results into real contradictions and dismissed ones
+  const flagged: Result[] = [];
+  const dismissed: Result[] = [];
+  if (results) {
+    for (const result of results) {
+      if (result.type === "FALSE_POSITIVE") {
+        dismissed.push(result);
+      } else {
+        flagged.push(result);
+      }
+    }
+    // Highest confidence first
+    flagged.sort((a, b) => b.confidence - a.confidence);
   }
 
   return (
@@ -52,16 +69,16 @@ Severity: HIGH, MEDIUM, LOW`
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
           <div>
-            <h3>Transcript — March 2023</h3>
+            <h3>Earlier deposition</h3>
             <pre style={{ background: "#f5f5f5", padding: 12, fontSize: 12, whiteSpace: "pre-wrap" }}>
-            {TRANSCRIPT_1}
-          </pre>
+                        {TRANSCRIPT_1}
+                    </pre>
           </div>
           <div>
-            <h3>Transcript — September 2023</h3>
+            <h3>Later deposition</h3>
             <pre style={{ background: "#f5f5f5", padding: 12, fontSize: 12, whiteSpace: "pre-wrap" }}>
-            {TRANSCRIPT_2}
-          </pre>
+                        {TRANSCRIPT_2}
+                    </pre>
           </div>
         </div>
 
@@ -77,30 +94,75 @@ Severity: HIGH, MEDIUM, LOW`
 
         {results && (
             <div style={{ marginTop: 24 }}>
-              <h2>Results ({results.length} found)</h2>
-              {results.map((r, i) => (
-                  <div key={i} style={{
-                    border: "1px solid #ddd",
-                    borderRadius: 8,
-                    padding: 16,
-                    marginBottom: 12,
-                    borderLeft: `4px solid ${r.type === "DIRECT" ? "#ef4444" : r.type === "INFERENTIAL" ? "#f59e0b" : "#9ca3af"}`
-                  }}>
-                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <span style={{
-                  background: r.type === "DIRECT" ? "#fee2e2" : r.type === "INFERENTIAL" ? "#fef3c7" : "#f3f4f6",
-                  padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: "bold"
-                }}>{r.type}</span>
-                      <span style={{ fontSize: 12, color: "#666" }}>Severity: {r.severity}</span>
-                    </div>
-                    <div style={{ fontSize: 14 }}>
-                      <div style={{ marginBottom: 4 }}><strong>March:</strong> "{r.claim1}"</div>
-                      <div><strong>September:</strong> "{r.claim2}"</div>
-                    </div>
-                  </div>
+              {source === "cached" && (
+                  <p style={{ fontSize: 13, color: "#666", background: "#f3f4f6", padding: 8, borderRadius: 4 }}>
+                    Demo mode: showing a saved model response because no API key is set.
+                  </p>
+              )}
+
+              <h2>Contradictions ({flagged.length})</h2>
+              {flagged.length === 0 && <p>No contradictions found.</p>}
+              {flagged.map((result, i) => (
+                  <ResultCard key={i} result={result} />
               ))}
+
+              {dismissed.length > 0 && (
+                  <details style={{ marginTop: 24 }}>
+                    <summary style={{ cursor: "pointer", fontWeight: "bold" }}>
+                      Dismissed as imprecise language ({dismissed.length})
+                    </summary>
+                    <div style={{ marginTop: 12 }}>
+                      {dismissed.map((result, i) => (
+                          <ResultCard key={i} result={result} />
+                      ))}
+                    </div>
+                  </details>
+              )}
             </div>
         )}
+      </div>
+  );
+}
+
+// One contradiction card: type chip, score, quotes, and the reasons behind the score
+function ResultCard({ result }: { result: Result }) {
+  const style = TYPE_STYLES[result.type];
+
+  return (
+      <div style={{
+        border: "1px solid #ddd",
+        borderLeft: "4px solid " + style.border,
+        padding: 16,
+        marginBottom: 12,
+      }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                <span style={{ background: style.background, padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: "bold" }}>
+                    {style.label}
+                </span>
+          <span style={{ fontSize: 12, color: "#666" }}>
+                    Confidence: {Math.round(result.confidence * 100)}%
+                </span>
+        </div>
+
+        <div style={{ fontSize: 14 }}>
+          <div style={{ marginBottom: 4 }}><strong>Earlier:</strong> &ldquo;{result.quote1}&rdquo;</div>
+          <div><strong>Later:</strong> &ldquo;{result.quote2}&rdquo;</div>
+        </div>
+
+        {result.assumption && (
+            <div style={{ fontSize: 13, marginTop: 8, color: "#555" }}>
+              <strong>Assumes:</strong> {result.assumption}
+            </div>
+        )}
+
+        <div style={{ fontSize: 12, marginTop: 8, color: "#666" }}>
+          <strong>Why this score:</strong>
+          <ul style={{ margin: "4px 0 0 0", paddingLeft: 20 }}>
+            {result.reasons.map((reason, i) => (
+                <li key={i}>{reason}</li>
+            ))}
+          </ul>
+        </div>
       </div>
   );
 }
